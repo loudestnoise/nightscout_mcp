@@ -1,0 +1,20 @@
+{
+  "name": "mcp-nightscout",
+  "version": "1.0.0",
+  "description": "MCP server for Nightscout CGM remote monitoring — Type 1 Diabetes management",
+  "author": "EasyWeek GmbH",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/easyweek/mcp-nightscout.git"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^16.1",
+    "@commitlint/config-conventional": "^16.0"
+  },
+  "husky": {
+    "hooks": {
+      "commit-msg": "commitlint -E HUSKY_GIT_PARAMS"
+    }
+  }
+}

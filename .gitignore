@@ -1,0 +1,17 @@
+/node_modules
+.env
+npm-debug.log
+yarn-error.log
+/.fleet
+/.idea
+/.vscode
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/

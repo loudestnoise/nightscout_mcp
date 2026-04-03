@@ -1,0 +1,4 @@
+fastmcp>=2.0
+httpx>=0.27
+uvicorn[standard]
+python-json-logger>=2.0
