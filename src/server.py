@@ -158,8 +158,8 @@ def calculate_time_in_range(
     very_high = sum(1 for v in values if v > 250)
 
     avg_glucose = sum(values) / total
-    # Estimated A1C = (avg_glucose + 46.7) / 28.7
-    estimated_a1c = round((avg_glucose + 46.7) / 28.7, 1)
+    # Estimated HbA1c (DCCT) = (avg_glucose + 46.7) / 28.7
+    estimated_hba1c = round((avg_glucose + 46.7) / 28.7, 1)
 
     std_dev = (sum((v - avg_glucose) ** 2 for v in values) / total) ** 0.5
     cv = round((std_dev / avg_glucose) * 100, 1) if avg_glucose > 0 else 0
@@ -170,7 +170,7 @@ def calculate_time_in_range(
         "average_glucose_mgdl": round(avg_glucose, 1),
         "std_dev": round(std_dev, 1),
         "coefficient_of_variation": cv,
-        "estimated_a1c": estimated_a1c,
+        "estimated_hba1c": estimated_hba1c,
         "time_in_range_pct": round(in_range / total * 100, 1),
         "time_below_range_pct": round(below / total * 100, 1),
         "time_above_range_pct": round(above / total * 100, 1),
