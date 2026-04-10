@@ -18,6 +18,7 @@ from src.nightscout_client import (
     get_profiles,
     update_profile,
     get_device_status,
+    get_aggregated_glucose_stats,
 )
 
 AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN")
@@ -467,6 +468,19 @@ def analyze_glucose_patterns(hours: int = 168) -> dict:
         "daily_stats": daily_stats,
         "problem_hours": problem_hours,
     }
+
+
+@mcp.tool()
+def get_glucose_stats_batch(date_from: str, date_to: str) -> dict:
+    """Get aggregated glucose statistics for a long date range.
+
+    Uses one Nightscout range query and aggregates server-side.
+
+    Args:
+        date_from: Start date in ISO format (e.g. '2026-01-03T00:00:00Z')
+        date_to: End date in ISO format (e.g. '2026-04-03T23:59:59Z')
+    """
+    return get_aggregated_glucose_stats(date_from, date_to)
 
 
 # =============================================================================
