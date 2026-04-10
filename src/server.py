@@ -107,7 +107,10 @@ def get_recent_glucose(count: int = 36) -> list[dict]:
 
 @mcp.tool()
 def get_glucose_by_date_range(date_from: str, date_to: str, count: int = 1000) -> list[dict]:
-    """Get CGM glucose readings for a specific date range.
+    """Get raw CGM glucose readings for a short date range.
+
+    For long-term ranges, prefer get_glucose_stats_batch() to avoid
+    many repeated calls and client-side rate limits.
 
     Args:
         date_from: Start date in ISO format (e.g. '2024-01-15T00:00:00Z')
@@ -243,7 +246,8 @@ def get_daily_glucose_stats(date: str) -> dict:
 
 @mcp.tool()
 def get_recent_treatments(count: int = 20) -> list[dict]:
-    """Get recent treatments (insulin boluses, carb entries, temp basals, notes, etc.).
+    """Get recent treatments (insulin boluses, carb entries,
+    temp basals, notes, etc.).
 
     Args:
         count: Number of treatments to return (default 20)
@@ -256,8 +260,10 @@ def get_treatments_by_date(date_from: str, date_to: str, count: int = 500) -> li
     """Get treatments for a specific date range.
 
     Args:
-        date_from: Start date in ISO format (e.g. '2024-01-15T00:00:00Z')
-        date_to: End date in ISO format (e.g. '2024-01-15T23:59:59Z')
+        date_from: Start date in ISO format
+            (e.g. '2024-01-15T00:00:00Z')
+        date_to: End date in ISO format
+            (e.g. '2024-01-15T23:59:59Z')
         count: Maximum number of treatments (default 500)
     """
     return get_treatments_by_range(date_from, date_to, count)
