@@ -152,7 +152,7 @@ def calculate_time_in_range(
         return {"error": "No valid glucose readings found"}
 
     below = sum(1 for v in values if v < low)
-    above = sum(1 for v in values if v > high)
+    above = sum(1 for v in values if v >= high)
     in_range = total - below - above
     very_low = sum(1 for v in values if v < 54)
     very_high = sum(1 for v in values if v > 250)
