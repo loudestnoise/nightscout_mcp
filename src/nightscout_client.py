@@ -155,3 +155,191 @@ def update_profile(profile: dict) -> any:
 
 def get_device_status(count: int = 1) -> list:
     return _get("devicestatus.json", {"count": str(count)})
+
+
+# ---------------------------------------------------------------------------
+# Aggregated statistics (batch queries)
+# ---------------------------------------------------------------------------
+
+def get_aggregated_glucose_stats(date_from: str, date_to: str) -> dict:
+    """Fetch all glucose readings for a date range in ONE API call
+    and aggregate by day. Returns daily stats and weekly/overall
+    summaries.
+
+    Args:
+        date_from: Start date in ISO format
+            (e.g. '2026-01-03T00:00:00Z')
+        date_to: End date in ISO format
+            (e.g. '2026-04-03T23:59:59Z')
+
+    Returns:
+        dict with 'days' (list of daily stats) and 'summary'
+    """
+    # Single API call for entire range
+    readings = get_entries_by_range(
+        date_from, date_to, count=999999
+    )
+
+    if not readings:
+        return {
+            "period_from": date_from,
+            "period_to": date_to,
+            "days": [],
+            "summary": {}
+        }
+
+    # Group readings by day
+    by_day: dict[str, list] = {}
+    for entry in readings:
+        if "sgv" not in entry or "dateString" not in entry:
+            continue
+        try:
+            ts = datetime.fromisoformat(
+                entry["dateString"].replace("Z", "+00:00")
+            )
+            day_key = ts.strftime("%Y-%m-%d")
+            by_day.setdefault(day_key, []).append(entry["sgv"])
+        except (ValueError, KeyError):
+            pass
+
+    # Compute daily stats
+    daily_stats = []
+    all_readings = []
+    for day_key in sorted(by_day.keys()):
+        values = by_day[day_key]
+        all_readings.extend(values)
+        avg = sum(values) / len(values)
+        below_70 = sum(1 for v in values if v < 70)
+        above_180 = sum(1 for v in values if v >= 180)
+        in_range = len(values) - below_70 - above_180
+        in_tight_range = sum(1 for v in values if 70 <= v <= 140)
+        sorted_vals = sorted(values)
+        median = sorted_vals[len(values) // 2]
+        std_dev = (
+            sum((v - avg) ** 2 for v in values) / len(values)
+        ) ** 0.5
+
+        daily_stats.append({
+            "date": day_key,
+            "avg": round(avg, 1),
+            "median": median,
+            "std_dev": round(std_dev, 1),
+            "min": min(values),
+            "max": max(values),
+            "readings": len(values),
+            "tir_pct": round(in_range / len(values) * 100, 1),
+            "titr_pct": round(
+                in_tight_range / len(values) * 100, 1
+            ),
+            "tir_low_pct": round(below_70 / len(values) * 100, 1),
+            "tir_high_pct": round(
+                above_180 / len(values) * 100, 1
+            ),
+        })
+
+    # Compute overall summary
+    overall_avg = (
+        sum(all_readings) / len(all_readings) if all_readings else 0
+    )
+    overall_below_70 = sum(1 for v in all_readings if v < 70)
+    overall_above_180 = sum(1 for v in all_readings if v >= 180)
+    overall_in_range = (
+        len(all_readings) - overall_below_70 - overall_above_180
+    )
+    overall_in_tight_range = sum(
+        1 for v in all_readings if 70 <= v <= 140
+    )
+    overall_std_dev = (
+        (
+            sum((v - overall_avg) ** 2 for v in all_readings)
+            / len(all_readings)
+        ) ** 0.5
+        if all_readings
+        else 0
+    )
+    estimated_hba1c = (
+        round((overall_avg + 46.7) / 28.7, 1) if overall_avg > 0 else 0
+    )
+
+    # Weekday breakdown
+    weekday_stats: dict[str, list] = {
+        "Monday": [],
+        "Tuesday": [],
+        "Wednesday": [],
+        "Thursday": [],
+        "Friday": [],
+        "Saturday": [],
+        "Sunday": []
+    }
+    weekday_names = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday"
+    ]
+    for day_key in by_day:
+        ts = datetime.fromisoformat(f"{day_key}T00:00:00Z")
+        weekday = weekday_names[ts.weekday()]
+        weekday_stats[weekday].extend(by_day[day_key])
+
+    weekday_avgs = {
+        day: round(sum(vals) / len(vals), 1) if vals else 0
+        for day, vals in weekday_stats.items()
+    }
+
+    best_day = (
+        min(daily_stats, key=lambda x: x["avg"]) if daily_stats else None
+    )
+    worst_day = (
+        max(daily_stats, key=lambda x: x["avg"]) if daily_stats else None
+    )
+
+    return {
+        "period_from": date_from,
+        "period_to": date_to,
+        "total_readings": len(all_readings),
+        "days": daily_stats,
+        "summary": {
+            "overall_avg": round(overall_avg, 1),
+            "overall_std_dev": round(overall_std_dev, 1),
+            "overall_tir_pct": (
+                round(
+                    overall_in_range / len(all_readings) * 100, 1
+                )
+                if all_readings
+                else 0
+            ),
+            "overall_titr_pct": (
+                round(
+                    overall_in_tight_range / len(all_readings) * 100,
+                    1,
+                )
+                if all_readings
+                else 0
+            ),
+            "overall_tir_low_pct": (
+                round(
+                    overall_below_70 / len(all_readings) * 100, 1
+                )
+                if all_readings
+                else 0
+            ),
+            "overall_tir_high_pct": (
+                round(
+                    overall_above_180 / len(all_readings) * 100, 1
+                )
+                if all_readings
+                else 0
+            ),
+            "estimated_hba1c": estimated_hba1c,
+            "best_day": best_day["date"] if best_day else None,
+            "best_day_avg": best_day["avg"] if best_day else None,
+            "worst_day": worst_day["date"] if worst_day else None,
+            "worst_day_avg": worst_day["avg"] if worst_day else None,
+            "weekday_avgs": weekday_avgs,
+        }
+    }
+

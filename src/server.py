@@ -18,6 +18,7 @@ from src.nightscout_client import (
     get_profiles,
     update_profile,
     get_device_status,
+    get_aggregated_glucose_stats,
 )
 
 AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN")
@@ -106,7 +107,10 @@ def get_recent_glucose(count: int = 36) -> list[dict]:
 
 @mcp.tool()
 def get_glucose_by_date_range(date_from: str, date_to: str, count: int = 1000) -> list[dict]:
-    """Get CGM glucose readings for a specific date range.
+    """Get raw CGM glucose readings for a short date range.
+
+    For long-term ranges, prefer get_glucose_stats_batch() to avoid
+    many repeated calls and client-side rate limits.
 
     Args:
         date_from: Start date in ISO format (e.g. '2024-01-15T00:00:00Z')
@@ -152,14 +156,14 @@ def calculate_time_in_range(
         return {"error": "No valid glucose readings found"}
 
     below = sum(1 for v in values if v < low)
-    above = sum(1 for v in values if v > high)
+    above = sum(1 for v in values if v >= high)
     in_range = total - below - above
     very_low = sum(1 for v in values if v < 54)
     very_high = sum(1 for v in values if v > 250)
 
     avg_glucose = sum(values) / total
-    # Estimated A1C = (avg_glucose + 46.7) / 28.7
-    estimated_a1c = round((avg_glucose + 46.7) / 28.7, 1)
+    # Estimated HbA1c (DCCT) = (avg_glucose + 46.7) / 28.7
+    estimated_hba1c = round((avg_glucose + 46.7) / 28.7, 1)
 
     std_dev = (sum((v - avg_glucose) ** 2 for v in values) / total) ** 0.5
     cv = round((std_dev / avg_glucose) * 100, 1) if avg_glucose > 0 else 0
@@ -170,7 +174,7 @@ def calculate_time_in_range(
         "average_glucose_mgdl": round(avg_glucose, 1),
         "std_dev": round(std_dev, 1),
         "coefficient_of_variation": cv,
-        "estimated_a1c": estimated_a1c,
+        "estimated_hba1c": estimated_hba1c,
         "time_in_range_pct": round(in_range / total * 100, 1),
         "time_below_range_pct": round(below / total * 100, 1),
         "time_above_range_pct": round(above / total * 100, 1),
@@ -242,7 +246,8 @@ def get_daily_glucose_stats(date: str) -> dict:
 
 @mcp.tool()
 def get_recent_treatments(count: int = 20) -> list[dict]:
-    """Get recent treatments (insulin boluses, carb entries, temp basals, notes, etc.).
+    """Get recent treatments (insulin boluses, carb entries,
+    temp basals, notes, etc.).
 
     Args:
         count: Number of treatments to return (default 20)
@@ -255,8 +260,10 @@ def get_treatments_by_date(date_from: str, date_to: str, count: int = 500) -> li
     """Get treatments for a specific date range.
 
     Args:
-        date_from: Start date in ISO format (e.g. '2024-01-15T00:00:00Z')
-        date_to: End date in ISO format (e.g. '2024-01-15T23:59:59Z')
+        date_from: Start date in ISO format
+            (e.g. '2024-01-15T00:00:00Z')
+        date_to: End date in ISO format
+            (e.g. '2024-01-15T23:59:59Z')
         count: Maximum number of treatments (default 500)
     """
     return get_treatments_by_range(date_from, date_to, count)
@@ -467,6 +474,19 @@ def analyze_glucose_patterns(hours: int = 168) -> dict:
         "daily_stats": daily_stats,
         "problem_hours": problem_hours,
     }
+
+
+@mcp.tool()
+def get_glucose_stats_batch(date_from: str, date_to: str) -> dict:
+    """Get aggregated glucose statistics for a long date range.
+
+    Uses one Nightscout range query and aggregates server-side.
+
+    Args:
+        date_from: Start date in ISO format (e.g. '2026-01-03T00:00:00Z')
+        date_to: End date in ISO format (e.g. '2026-04-03T23:59:59Z')
+    """
+    return get_aggregated_glucose_stats(date_from, date_to)
 
 
 # =============================================================================
