@@ -1,4 +1,4 @@
-# MCP Nightscout
+# MCP Nightscout by [B77.ai](https://b77.ai)
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that connects AI assistants to [Nightscout](http://www.nightscout.info/) — the open-source CGM remote monitoring platform for Type 1 Diabetes management.
 
@@ -160,4 +160,4 @@ tests/
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2026 EasyWeek GmbH
+[MIT](LICENSE) — Copyright (c) – 2026 B77.ai (EasyWeek GmbH)
