@@ -11,6 +11,11 @@ NIGHTSCOUT_API_SECRET = os.environ.get("NIGHTSCOUT_API_SECRET", "")
 NIGHTSCOUT_TOKEN = os.environ.get("NIGHTSCOUT_TOKEN", "")
 REQUEST_TIMEOUT = int(os.environ.get("NIGHTSCOUT_TIMEOUT", "30"))
 
+# DEBUG: Log environment variables on startup
+print(f"[DEBUG] NIGHTSCOUT_URL={NIGHTSCOUT_URL!r}", file=sys.stderr)
+print(f"[DEBUG] NIGHTSCOUT_TOKEN={NIGHTSCOUT_TOKEN!r}", file=sys.stderr)
+print(f"[DEBUG] NIGHTSCOUT_API_SECRET={'***' if NIGHTSCOUT_API_SECRET else 'not set'}", file=sys.stderr)
+
 
 def _headers() -> dict:
     """Build auth headers for Nightscout API."""
