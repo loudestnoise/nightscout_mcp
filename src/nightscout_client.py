@@ -32,7 +32,8 @@ def _url(path: str) -> str:
 
 def _get(path: str, params: Optional[dict] = None) -> any:
     p = {**_params(), **(params or {})}
-    resp = httpx.get(_url(path), headers=_headers(), params=p, timeout=REQUEST_TIMEOUT)
+    url = _url(path)
+    resp = httpx.get(url, headers=_headers(), params=p, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
@@ -84,7 +85,14 @@ def health_check() -> bool:
 # ---------------------------------------------------------------------------
 
 def get_server_status() -> dict:
-    return _get("status.json")
+    """Get Nightscout server status. Must return a dict, not a list."""
+    result = _get("status.json")
+    # Verify we got a dict, not a list of entries
+    if isinstance(result, list):
+        raise ValueError(f"get_server_status returned a list instead of dict. Expected server status, got: {result[0] if result else 'empty list'}")
+    if not isinstance(result, dict):
+        raise ValueError(f"get_server_status returned unexpected type: {type(result)}")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -113,20 +121,62 @@ def get_entries_by_range(date_from: str, date_to: str, count: int = 1000) -> lis
 # ---------------------------------------------------------------------------
 
 def get_treatments(count: int = 10, find: Optional[dict] = None) -> list:
+    """Fetch treatments from /api/v1/treatments.json endpoint.
+
+    Returns a list of treatment objects with fields like:
+    - eventType: 'Bolus', 'Meal Bolus', 'Temp Basal', 'Carb Correction', etc.
+    - insulin: insulin amount in units (for boluses)
+    - carbs: carbs in grams (for carb entries)
+    - created_at: ISO 8601 timestamp
+    """
     params = {"count": str(count)}
     if find:
         for k, v in find.items():
             params[f"find[{k}]"] = str(v)
-    return _get("treatments.json", params)
+    result = _get("treatments.json", params)
+
+    # Validate we got a list of treatments, not glucose entries
+    if not isinstance(result, list):
+        raise ValueError(f"treatments endpoint returned non-list: {type(result)}")
+
+    # Check if we accidentally got glucose entries (they have 'sgv' field, not 'eventType')
+    if result and isinstance(result[0], dict):
+        first = result[0]
+        if 'sgv' in first and 'eventType' not in first:
+            raise ValueError(f"treatments endpoint returned glucose entries instead of treatments. Got: {first}")
+
+    return result
 
 
 def get_treatments_by_range(date_from: str, date_to: str, count: int = 1000) -> list:
+    """Fetch treatments by date range from /api/v1/treatments.json endpoint.
+
+    Args:
+        date_from: Start date in ISO 8601 format (e.g., '2026-08-12T00:00:00Z')
+        date_to: End date in ISO 8601 format (e.g., '2026-08-12T23:59:59Z')
+        count: Maximum number of treatments to return
+
+    Returns:
+        List of treatment objects with eventType, insulin, carbs, timestamps, etc.
+    """
     params = {
         "find[created_at][$gte]": date_from,
         "find[created_at][$lte]": date_to,
         "count": str(count),
     }
-    return _get("treatments.json", params)
+    result = _get("treatments.json", params)
+
+    # Validate we got a list of treatments, not glucose entries
+    if not isinstance(result, list):
+        raise ValueError(f"treatments endpoint returned non-list: {type(result)}")
+
+    # Check if we accidentally got glucose entries
+    if result and isinstance(result[0], dict):
+        first = result[0]
+        if 'sgv' in first and 'eventType' not in first:
+            raise ValueError(f"treatments endpoint returned glucose entries instead of treatments. Got: {first}")
+
+    return result
 
 
 def add_treatment(treatment: dict) -> any:
@@ -154,7 +204,32 @@ def update_profile(profile: dict) -> any:
 # ---------------------------------------------------------------------------
 
 def get_device_status(count: int = 1) -> list:
-    return _get("devicestatus.json", {"count": str(count)})
+    """Get device status from /api/v1/devicestatus.json endpoint.
+
+    Returns a list of device status objects containing:
+    - device: device name (e.g., 'Trio', 'iPhone')
+    - loop: loop algorithm status and decisions
+    - pump: pump status (battery, bolusing, etc.)
+    - uploader: CGM uploader info
+    - created_at: timestamp
+
+    NOT glucose entries - those have 'sgv' field.
+    """
+    result = _get("devicestatus.json", {"count": str(count)})
+
+    # Validate we got device status, not glucose entries
+    if not isinstance(result, list):
+        raise ValueError(f"devicestatus endpoint returned non-list: {type(result)}")
+
+    # Check if we accidentally got glucose entries (they have 'sgv' field, devices have 'device', 'loop', or 'pump')
+    if result and isinstance(result[0], dict):
+        first = result[0]
+        has_sgv = 'sgv' in first
+        has_device_fields = any(k in first for k in ['device', 'loop', 'pump', 'uploader'])
+        if has_sgv and not has_device_fields:
+            raise ValueError(f"devicestatus endpoint returned glucose entries instead of device status. Got: {first}")
+
+    return result
 
 
 # ---------------------------------------------------------------------------
