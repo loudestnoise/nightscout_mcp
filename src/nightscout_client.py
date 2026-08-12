@@ -33,11 +33,18 @@ def _url(path: str) -> str:
 
 
 def _get(path: str, params: Optional[dict] = None) -> any:
-    p = {**_params(), **(params or {})}
+    base_params = _params()
+    params_merged = {**base_params, **(params or {})}
     url = _url(path)
-    # LOG WHAT ENDPOINT IS BEING CALLED
-    print(f"[DEBUG] _get called: path={path} -> url={url}", file=sys.stderr)
-    resp = httpx.get(url, headers=_headers(), params=p, timeout=REQUEST_TIMEOUT)
+
+    # DETAILED DEBUG LOGGING
+    print(f"[DEBUG] _get(path={path!r}, params={params!r})", file=sys.stderr)
+    print(f"[DEBUG]   base_params={base_params}", file=sys.stderr)
+    print(f"[DEBUG]   merged_params={params_merged}", file=sys.stderr)
+    print(f"[DEBUG]   _url(path)={url}", file=sys.stderr)
+
+    resp = httpx.get(url, headers=_headers(), params=params_merged, timeout=REQUEST_TIMEOUT)
+    print(f"[DEBUG]   actual request URL: {resp.request.url}", file=sys.stderr)
     resp.raise_for_status()
     result = resp.json()
     # LOG WHAT DATA WAS RETURNED
