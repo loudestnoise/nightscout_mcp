@@ -1,6 +1,8 @@
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import sys
+import json
 
 import httpx
 
@@ -33,9 +35,21 @@ def _url(path: str) -> str:
 def _get(path: str, params: Optional[dict] = None) -> any:
     p = {**_params(), **(params or {})}
     url = _url(path)
+    # LOG WHAT ENDPOINT IS BEING CALLED
+    print(f"[DEBUG] _get called: path={path} -> url={url}", file=sys.stderr)
     resp = httpx.get(url, headers=_headers(), params=p, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
-    return resp.json()
+    result = resp.json()
+    # LOG WHAT DATA WAS RETURNED
+    if isinstance(result, list) and result:
+        first_item = result[0]
+        print(f"[DEBUG] Response from {path}: list with {len(result)} items", file=sys.stderr)
+        print(f"[DEBUG] First item keys: {list(first_item.keys()) if isinstance(first_item, dict) else type(first_item)}", file=sys.stderr)
+        if isinstance(first_item, dict):
+            print(f"[DEBUG] First item: sgv={first_item.get('sgv')}, eventType={first_item.get('eventType')}, device={first_item.get('device')}", file=sys.stderr)
+    elif isinstance(result, dict):
+        print(f"[DEBUG] Response from {path}: dict with keys {list(result.keys())[:5]}", file=sys.stderr)
+    return result
 
 
 def _post(path: str, data: any) -> any:
@@ -86,12 +100,18 @@ def health_check() -> bool:
 
 def get_server_status() -> dict:
     """Get Nightscout server status. Must return a dict, not a list."""
+    print(f"[DEBUG] get_server_status() called", file=sys.stderr)
     result = _get("status.json")
     # Verify we got a dict, not a list of entries
     if isinstance(result, list):
-        raise ValueError(f"get_server_status returned a list instead of dict. Expected server status, got: {result[0] if result else 'empty list'}")
+        error_msg = f"get_server_status returned a list instead of dict. Expected server status, got: {result[0] if result else 'empty list'}"
+        print(f"[ERROR] {error_msg}", file=sys.stderr)
+        raise ValueError(error_msg)
     if not isinstance(result, dict):
-        raise ValueError(f"get_server_status returned unexpected type: {type(result)}")
+        error_msg = f"get_server_status returned unexpected type: {type(result)}"
+        print(f"[ERROR] {error_msg}", file=sys.stderr)
+        raise ValueError(error_msg)
+    print(f"[DEBUG] get_server_status() returning dict with status={result.get('status')}", file=sys.stderr)
     return result
 
 
@@ -129,6 +149,7 @@ def get_treatments(count: int = 10, find: Optional[dict] = None) -> list:
     - carbs: carbs in grams (for carb entries)
     - created_at: ISO 8601 timestamp
     """
+    print(f"[DEBUG] get_treatments(count={count}) called", file=sys.stderr)
     params = {"count": str(count)}
     if find:
         for k, v in find.items():
@@ -137,14 +158,22 @@ def get_treatments(count: int = 10, find: Optional[dict] = None) -> list:
 
     # Validate we got a list of treatments, not glucose entries
     if not isinstance(result, list):
-        raise ValueError(f"treatments endpoint returned non-list: {type(result)}")
+        error_msg = f"treatments endpoint returned non-list: {type(result)}"
+        print(f"[ERROR] {error_msg}", file=sys.stderr)
+        raise ValueError(error_msg)
 
     # Check if we accidentally got glucose entries (they have 'sgv' field, not 'eventType')
     if result and isinstance(result[0], dict):
         first = result[0]
-        if 'sgv' in first and 'eventType' not in first:
-            raise ValueError(f"treatments endpoint returned glucose entries instead of treatments. Got: {first}")
+        has_sgv = 'sgv' in first
+        has_event_type = 'eventType' in first
+        print(f"[DEBUG] First item: has_sgv={has_sgv}, has_eventType={has_event_type}", file=sys.stderr)
+        if has_sgv and not has_event_type:
+            error_msg = f"treatments endpoint returned glucose entries instead of treatments. Got: {json.dumps(first, default=str)}"
+            print(f"[ERROR] {error_msg}", file=sys.stderr)
+            raise ValueError(error_msg)
 
+    print(f"[DEBUG] get_treatments() returning {len(result)} items", file=sys.stderr)
     return result
 
 
@@ -215,20 +244,27 @@ def get_device_status(count: int = 1) -> list:
 
     NOT glucose entries - those have 'sgv' field.
     """
+    print(f"[DEBUG] get_device_status(count={count}) called", file=sys.stderr)
     result = _get("devicestatus.json", {"count": str(count)})
 
     # Validate we got device status, not glucose entries
     if not isinstance(result, list):
-        raise ValueError(f"devicestatus endpoint returned non-list: {type(result)}")
+        error_msg = f"devicestatus endpoint returned non-list: {type(result)}"
+        print(f"[ERROR] {error_msg}", file=sys.stderr)
+        raise ValueError(error_msg)
 
     # Check if we accidentally got glucose entries (they have 'sgv' field, devices have 'device', 'loop', or 'pump')
     if result and isinstance(result[0], dict):
         first = result[0]
         has_sgv = 'sgv' in first
         has_device_fields = any(k in first for k in ['device', 'loop', 'pump', 'uploader'])
+        print(f"[DEBUG] First item: has_sgv={has_sgv}, has_device_fields={has_device_fields}, keys={list(first.keys())[:5]}", file=sys.stderr)
         if has_sgv and not has_device_fields:
-            raise ValueError(f"devicestatus endpoint returned glucose entries instead of device status. Got: {first}")
+            error_msg = f"devicestatus endpoint returned glucose entries instead of device status. Got: {json.dumps(first, default=str)}"
+            print(f"[ERROR] {error_msg}", file=sys.stderr)
+            raise ValueError(error_msg)
 
+    print(f"[DEBUG] get_device_status() returning {len(result)} items", file=sys.stderr)
     return result
 
 
