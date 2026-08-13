@@ -27,6 +27,9 @@ def check_health(url):
 def log_to_nightscout(status):
     """Log status to Nightscout via MCP."""
     token = os.environ.get("MCP_AUTH_TOKEN")
+    if not token:
+        print("Warning: MCP_AUTH_TOKEN not set, skipping Nightscout log", file=sys.stderr)
+        return False
     mcp_url = f"http://localhost:8000/mcp/{token}"
 
     payload = {
