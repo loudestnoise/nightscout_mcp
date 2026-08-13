@@ -19,6 +19,7 @@ from src.nightscout_client import (
     update_profile,
     get_device_status,
     get_aggregated_glucose_stats,
+    get_tir_by_day,
 )
 
 AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN")
@@ -487,6 +488,26 @@ def get_glucose_stats_batch(date_from: str, date_to: str) -> dict:
         date_to: End date in ISO format (e.g. '2026-04-03T23:59:59Z')
     """
     return get_aggregated_glucose_stats(date_from, date_to)
+
+
+@mcp.tool()
+def get_tir_summary(days: int = 7, low: int = 70, high: int = 180) -> dict:
+    """Get Time-In-Range (TIR) summary for the last N days.
+
+    Returns daily TIR percentage and overall statistics. Perfect for
+    asking "what's my TIR for the last 7 days?" or "show me my daily
+    time in range for the last 2 weeks".
+
+    Args:
+        days: Number of days to analyze (default 7 = 1 week)
+        low: Low threshold in mg/dL (default 70 = hypoglycemia risk)
+        high: High threshold in mg/dL (default 180 = hyperglycemia)
+
+    Returns:
+        dict with 'days' (array of daily TIR stats) and 'summary' (overall stats)
+        Each day includes: date, readings, average_glucose, tir_pct, min, max
+    """
+    return get_tir_by_day(days=days, low=low, high=high)
 
 
 # =============================================================================

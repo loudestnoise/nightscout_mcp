@@ -466,3 +466,101 @@ def get_aggregated_glucose_stats(date_from: str, date_to: str) -> dict:
         }
     }
 
+
+def get_tir_by_day(
+    days: int = 7, low: int = 70, high: int = 180
+) -> dict:
+    """Get Time-In-Range stats for each day in the last N days.
+
+    Args:
+        days: Number of days to analyze (default 7)
+        low: Low threshold in mg/dL (default 70)
+        high: High threshold in mg/dL (default 180)
+
+    Returns:
+        dict with 'days' list (each day's TIR stats) and 'summary' (overall stats)
+    """
+    now = datetime.now(timezone.utc)
+    date_from = (now - timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).isoformat()
+    date_to = now.replace(
+        hour=23, minute=59, second=59, microsecond=999999
+    ).isoformat()
+
+    # Fetch all readings for the period
+    readings = get_entries_by_range(date_from, date_to, count=999999)
+
+    if not readings:
+        return {
+            "period_days": days,
+            "days": [],
+            "summary": {
+                "total_readings": 0,
+                "average_glucose": 0,
+                "tir_pct": 0,
+            }
+        }
+
+    # Group by day and compute TIR for each
+    by_day: dict[str, list] = {}
+    for entry in readings:
+        if "sgv" not in entry or "dateString" not in entry:
+            continue
+        try:
+            ts = datetime.fromisoformat(
+                entry["dateString"].replace("Z", "+00:00")
+            )
+            day_key = ts.strftime("%Y-%m-%d")
+            by_day.setdefault(day_key, []).append(entry["sgv"])
+        except (ValueError, KeyError):
+            pass
+
+    # Compute TIR for each day
+    daily_tir = []
+    all_values = []
+    for day_key in sorted(by_day.keys()):
+        values = by_day[day_key]
+        all_values.extend(values)
+
+        total = len(values)
+        below_low = sum(1 for v in values if v < low)
+        above_high = sum(1 for v in values if v >= high)
+        in_range = total - below_low - above_high
+        avg = sum(values) / total if total > 0 else 0
+
+        daily_tir.append({
+            "date": day_key,
+            "readings": total,
+            "average_glucose": round(avg, 1),
+            "min": min(values),
+            "max": max(values),
+            "tir_pct": round(in_range / total * 100, 1) if total > 0 else 0,
+            "below_range_pct": round(below_low / total * 100, 1) if total > 0 else 0,
+            "above_range_pct": round(above_high / total * 100, 1) if total > 0 else 0,
+        })
+
+    # Compute overall summary
+    total_readings = len(all_values)
+    if total_readings > 0:
+        overall_avg = sum(all_values) / total_readings
+        overall_below = sum(1 for v in all_values if v < low)
+        overall_above = sum(1 for v in all_values if v >= high)
+        overall_in_range = total_readings - overall_below - overall_above
+        overall_tir = (overall_in_range / total_readings * 100)
+    else:
+        overall_avg = overall_tir = 0
+
+    return {
+        "period_days": days,
+        "thresholds": {"low": low, "high": high},
+        "days": daily_tir,
+        "summary": {
+            "total_readings": total_readings,
+            "average_glucose": round(overall_avg, 1),
+            "tir_pct": round(overall_tir, 1),
+            "min": min(all_values) if all_values else 0,
+            "max": max(all_values) if all_values else 0,
+        }
+    }
+
