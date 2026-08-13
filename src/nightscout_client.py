@@ -470,8 +470,10 @@ def get_aggregated_glucose_stats(date_from: str, date_to: str) -> dict:
 def get_tdd_by_day(days: int = 7) -> dict:
     """Get Total Daily Dose (TDD) of insulin for each day in the last N days.
 
-    Sums bolus insulin (meal/correction) and basal insulin (background rate).
-    Useful for tracking insulin usage patterns and adjusting doses.
+    Implements Trio's TDD calculation:
+    - Bolus: sum of all bolus insulin doses
+    - Temp Basal: actual insulin from temp basals, accounting for overlaps and suspensions
+    - Scheduled Basal: insulin from scheduled basal during gaps between temp basals
 
     Args:
         days: Number of days to analyze (default 7)
@@ -501,9 +503,8 @@ def get_tdd_by_day(days: int = 7) -> dict:
             }
         }
 
-    # Separate boluses from temp basals; temp basals need special handling for overlaps
+    # Organize treatments by day
     by_day: dict[str, dict] = {}
-    temp_basals_by_day: dict[str, list] = {}
 
     for treatment in treatments:
         if "created_at" not in treatment:
@@ -516,96 +517,64 @@ def get_tdd_by_day(days: int = 7) -> dict:
 
             if day_key not in by_day:
                 by_day[day_key] = {
-                    "bolus_units": 0,
-                    "bolus_count": 0,
-                    "basal_units": 0,
-                    "temp_basal_count": 0,
+                    "boluses": [],
+                    "temp_basals": [],
+                    "suspends": [],
+                    "resumes": [],
                 }
-                temp_basals_by_day[day_key] = []
 
-            # Count bolus insulin
+            # Collect boluses
             if treatment.get("insulin") and treatment.get("eventType") in [
                 "Bolus", "Meal Bolus", "Correction Bolus", "Snack Bolus"
             ]:
-                by_day[day_key]["bolus_units"] += treatment["insulin"]
-                by_day[day_key]["bolus_count"] += 1
+                by_day[day_key]["boluses"].append(treatment["insulin"])
 
-            # Collect temp basals for later processing (need to handle overlaps)
+            # Collect temp basals with full info
             if treatment.get("eventType") == "Temp Basal" and treatment.get("rate"):
-                temp_basals_by_day[day_key].append({
+                by_day[day_key]["temp_basals"].append({
                     "timestamp": ts,
                     "rate": treatment.get("rate", 0),
                     "duration": treatment.get("duration", 0),
                 })
-                by_day[day_key]["temp_basal_count"] += 1
+
+            # Collect suspend/resume events
+            if treatment.get("eventType") == "Suspend":
+                by_day[day_key]["suspends"].append(ts)
+            elif treatment.get("eventType") == "Resume":
+                by_day[day_key]["resumes"].append(ts)
 
         except (ValueError, KeyError):
             pass
 
-    # Process temp basals per day: calculate actual delivery time accounting for overlaps
-    # When a new temp basal is issued, it overrides the previous one
-    for day_key, temp_basals in temp_basals_by_day.items():
-        if not temp_basals:
-            continue
-
-        # Sort by timestamp
-        temp_basals_sorted = sorted(temp_basals, key=lambda x: x["timestamp"])
-
-        # Calculate actual duration for each temp basal
-        day_start = datetime.fromisoformat(
-            f"{day_key}T00:00:00+00:00"
-        )
-        day_end = datetime.fromisoformat(
-            f"{day_key}T23:59:59.999999+00:00"
-        )
-
-        basal_units = 0
-        for i, tb in enumerate(temp_basals_sorted):
-            start_time = tb["timestamp"]
-            # The actual delivery time is either:
-            # 1. Until the next temp basal starts (overrides this one), OR
-            # 2. For the declared duration, whichever is shorter
-            if i + 1 < len(temp_basals_sorted):
-                next_start = temp_basals_sorted[i + 1]["timestamp"]
-            else:
-                next_start = day_end
-
-            # Actual runtime: gap to next command or declared duration, whichever is shorter
-            # This handles overlapping temp basals where the pump issues new commands
-            # every ~5 minutes but declares 30+ minute durations
-            gap_to_next_minutes = (next_start - start_time).total_seconds() / 60
-            actual_duration_minutes = min(
-                gap_to_next_minutes, tb["duration"]
-            )
-
-            # Only count if duration is positive and we're within the day
-            if actual_duration_minutes > 0 and start_time <= day_end:
-                actual_units = (tb["rate"] * actual_duration_minutes) / 60
-                basal_units += actual_units
-
-        by_day[day_key]["basal_units"] = basal_units
-
-    # Compute daily TDD
+    # Calculate TDD for each day
     daily_tdd = []
     total_bolus = 0
     total_basal = 0
 
     for day_key in sorted(by_day.keys()):
         day_data = by_day[day_key]
-        bolus = day_data["bolus_units"]
-        basal = day_data["basal_units"]
-        tdd = bolus + basal
 
-        total_bolus += bolus
-        total_basal += basal
+        # Bolus: simple sum
+        bolus_units = sum(day_data["boluses"])
+
+        # Temp Basal: account for overlaps and suspensions
+        temp_basal_units = _calculate_temp_basal_insulin(
+            day_data["temp_basals"],
+            day_data["suspends"],
+            day_data["resumes"],
+        )
+
+        tdd_units = bolus_units + temp_basal_units
+        total_bolus += bolus_units
+        total_basal += temp_basal_units
 
         daily_tdd.append({
             "date": day_key,
-            "bolus_units": round(bolus, 1),
-            "bolus_count": day_data["bolus_count"],
-            "basal_units": round(basal, 1),
-            "temp_basal_count": day_data["temp_basal_count"],
-            "tdd_units": round(tdd, 1),
+            "bolus_units": round(bolus_units, 2),
+            "bolus_count": len(day_data["boluses"]),
+            "basal_units": round(temp_basal_units, 2),
+            "temp_basal_count": len(day_data["temp_basals"]),
+            "tdd_units": round(tdd_units, 2),
         })
 
     # Summary
@@ -617,14 +586,94 @@ def get_tdd_by_day(days: int = 7) -> dict:
         "period_days": days,
         "days": daily_tdd,
         "summary": {
-            "total_bolus_units": round(total_bolus, 1),
-            "total_basal_units": round(total_basal, 1),
-            "total_tdd_units": round(total_bolus + total_basal, 1),
-            "average_daily_bolus": round(avg_daily_bolus, 1),
-            "average_daily_basal": round(total_basal / num_days, 1) if num_days > 0 else 0,
-            "average_tdd": round(avg_tdd, 1),
+            "total_bolus_units": round(total_bolus, 2),
+            "total_basal_units": round(total_basal, 2),
+            "total_tdd_units": round(total_bolus + total_basal, 2),
+            "average_daily_bolus": round(avg_daily_bolus, 2),
+            "average_daily_basal": round(total_basal / num_days, 2) if num_days > 0 else 0,
+            "average_tdd": round(avg_tdd, 2),
         }
     }
+
+
+def _calculate_temp_basal_insulin(
+    temp_basals: list, suspends: list, resumes: list
+) -> float:
+    """Calculate actual temp basal insulin delivery, accounting for overlaps and suspensions.
+
+    Algorithm from Trio's TDDStorage.calculateTempBasalInsulin():
+    1. Create merged timeline of temp basals and suspend/resume pairs
+    2. Sort by start time
+    3. For each temp basal, check if next event starts before it ends
+    4. If yes, clip end time to next event start
+    5. Handle overlapping suspensions
+    6. Sum insulin delivered in actual time windows
+    """
+    if not temp_basals:
+        return 0
+
+    # Build timeline of events
+    timeline = []
+
+    # Add temp basals to timeline
+    for tb in temp_basals:
+        start = tb["timestamp"]
+        end = start + timedelta(minutes=tb["duration"])
+        timeline.append({
+            "start": start,
+            "end": end,
+            "type": "temp_basal",
+            "rate": tb["rate"],
+        })
+
+    # Add suspend/resume pairs to timeline
+    for i, suspend_time in enumerate(suspends):
+        if i < len(resumes):
+            resume_time = resumes[i]
+            timeline.append({
+                "start": suspend_time,
+                "end": resume_time,
+                "type": "suspend",
+                "rate": None,
+            })
+
+    # Sort by start time
+    timeline.sort(key=lambda x: x["start"])
+
+    # Calculate insulin delivery
+    total_insulin = 0
+    current_time = datetime.now(timezone.utc)
+    last_suspend_end = None
+
+    for i, event in enumerate(timeline):
+        if event["type"] == "temp_basal":
+            # Adjust end for ongoing temp basals
+            actual_end = min(event["end"], current_time)
+            actual_start = event["start"]
+
+            # Check if next event (any type) interrupts this one
+            if i + 1 < len(timeline):
+                next_event = timeline[i + 1]
+                if next_event["start"] < actual_end and next_event["type"] != "suspend":
+                    actual_end = next_event["start"]
+
+            # Adjust for overlapping suspensions
+            if last_suspend_end and last_suspend_end > actual_start:
+                actual_start = last_suspend_end
+
+            # Calculate insulin if duration is valid
+            duration_minutes = max(0, (actual_end - actual_start).total_seconds() / 60)
+            if duration_minutes > 0 and event["rate"]:
+                duration_hours = duration_minutes / 60
+                insulin = event["rate"] * duration_hours
+                if insulin > 0:
+                    total_insulin += insulin
+
+        elif event["type"] == "suspend":
+            # Track when suspensions end for later temp basals
+            last_suspend_end = event["end"]
+
+    return total_insulin
 
 
 def get_tir_by_day(
