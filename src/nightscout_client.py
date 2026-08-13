@@ -546,6 +546,26 @@ def get_tdd_by_day(days: int = 7) -> dict:
         except (ValueError, KeyError):
             pass
 
+    # Fetch basal profile for scheduled basal calculations
+    basal_profile = None
+    try:
+        profiles = get_profiles()
+        if profiles and isinstance(profiles, list) and len(profiles) > 0:
+            profile = profiles[0]
+            # Nightscout profile structure: store -> defaultProfile -> basal
+            if isinstance(profile, dict) and "store" in profile:
+                store = profile["store"]
+                # Get the default profile name
+                default_profile_name = profile.get(
+                    "defaultProfile", "default"
+                )
+                if default_profile_name in store:
+                    profile_data = store[default_profile_name]
+                    if "basal" in profile_data:
+                        basal_profile = profile_data["basal"]
+    except Exception:
+        basal_profile = None
+
     # Calculate TDD for each day
     daily_tdd = []
     total_bolus = 0
@@ -564,15 +584,27 @@ def get_tdd_by_day(days: int = 7) -> dict:
             day_data["resumes"],
         )
 
-        tdd_units = bolus_units + temp_basal_units
+        # Scheduled Basal: fill gaps between temp basals with profile basal rates
+        scheduled_basal_units = 0
+        if basal_profile:
+            scheduled_basal_units = _calculate_scheduled_basal_insulin(
+                day_data["temp_basals"],
+                basal_profile,
+                day_key,
+            )
+
+        total_basal_units = temp_basal_units + scheduled_basal_units
+        tdd_units = bolus_units + total_basal_units
         total_bolus += bolus_units
-        total_basal += temp_basal_units
+        total_basal += total_basal_units
 
         daily_tdd.append({
             "date": day_key,
             "bolus_units": round(bolus_units, 2),
             "bolus_count": len(day_data["boluses"]),
-            "basal_units": round(temp_basal_units, 2),
+            "temp_basal_units": round(temp_basal_units, 2),
+            "scheduled_basal_units": round(scheduled_basal_units, 2),
+            "total_basal_units": round(total_basal_units, 2),
             "temp_basal_count": len(day_data["temp_basals"]),
             "tdd_units": round(tdd_units, 2),
         })
@@ -594,6 +626,135 @@ def get_tdd_by_day(days: int = 7) -> dict:
             "average_tdd": round(avg_tdd, 2),
         }
     }
+
+
+def _calculate_scheduled_basal_insulin(
+    temp_basals: list, basal_profile: list, day_key: str
+) -> float:
+    """Calculate scheduled basal insulin delivered during gaps between temp basals.
+
+    Algorithm:
+    1. Find gaps between temp basal events
+    2. For each gap, look up the profile basal rate for that time of day
+    3. Calculate insulin = rate × gap_duration_hours
+    4. Sum all gaps
+    """
+    if not temp_basals or not basal_profile:
+        return 0
+
+    # Sort temp basals by timestamp
+    sorted_basals = sorted(temp_basals, key=lambda x: x["timestamp"])
+
+    # Find gaps between temp basals
+    day_start = datetime.fromisoformat(f"{day_key}T00:00:00+00:00")
+    day_end = datetime.fromisoformat(f"{day_key}T23:59:59+00:00")
+    now = datetime.now(timezone.utc)
+    current_end = min(day_end, now)
+
+    gaps = []
+
+    # Gap before first temp basal
+    if sorted_basals:
+        first_basal_start = sorted_basals[0]["timestamp"]
+        if first_basal_start > day_start:
+            gaps.append((day_start, first_basal_start))
+
+        # Gaps between temp basals
+        for i in range(len(sorted_basals) - 1):
+            current = sorted_basals[i]
+            next_basal = sorted_basals[i + 1]
+
+            # End of current basal
+            current_end_time = current["timestamp"] + timedelta(
+                minutes=current["duration"]
+            )
+
+            # Start of next basal
+            next_start = next_basal["timestamp"]
+
+            # If there's a gap between them
+            if current_end_time < next_start:
+                gaps.append((current_end_time, next_start))
+
+        # Gap after last temp basal
+        last_basal = sorted_basals[-1]
+        last_basal_end = last_basal["timestamp"] + timedelta(
+            minutes=last_basal["duration"]
+        )
+        if last_basal_end < current_end:
+            gaps.append((last_basal_end, current_end))
+    else:
+        # No temp basals, entire day is gap
+        gaps.append((day_start, current_end))
+
+    # Calculate insulin for each gap using profile rates
+    total_insulin = 0
+
+    for gap_start, gap_end in gaps:
+        current_time = gap_start
+        while current_time < gap_end:
+            # Find basal rate for current time
+            rate = _get_basal_rate_for_time(current_time, basal_profile)
+
+            if not rate:
+                break
+
+            # Find next rate change (either profile switch or gap end)
+            next_rate_change = _get_next_profile_switch(
+                current_time, basal_profile
+            )
+            if next_rate_change is None or next_rate_change > gap_end:
+                next_rate_change = gap_end
+
+            # Ensure we don't go past the gap end
+            end_time = min(next_rate_change, gap_end)
+
+            # Calculate insulin for this segment
+            if end_time > current_time:
+                duration_hours = (
+                    (end_time - current_time).total_seconds() / 3600
+                )
+                insulin = rate * duration_hours
+                total_insulin += insulin
+
+            current_time = end_time
+
+    return total_insulin
+
+
+def _get_basal_rate_for_time(time: datetime, basal_profile: list) -> float:
+    """Get basal rate from profile for a specific time of day."""
+    # Extract time of day as minutes from midnight
+    minutes_from_midnight = time.hour * 60 + time.minute
+
+    # Find applicable profile entry
+    applicable_rate = None
+    for entry in basal_profile:
+        # Entry format: {"time": "00:00", "timeAsSeconds": 0, "value": 0.5}
+        if "timeAsSeconds" in entry:
+            entry_minutes = entry["timeAsSeconds"] // 60
+            if entry_minutes <= minutes_from_midnight:
+                applicable_rate = entry.get("value", 0)
+
+    return applicable_rate
+
+
+def _get_next_profile_switch(time: datetime, basal_profile: list) -> datetime:
+    """Find the next time the basal rate changes in the profile."""
+    current_minutes = time.hour * 60 + time.minute
+    day_start = datetime(
+        time.year, time.month, time.day, tzinfo=timezone.utc
+    )
+
+    next_switch = None
+    for entry in basal_profile:
+        if "timeAsSeconds" in entry:
+            entry_minutes = entry["timeAsSeconds"] // 60
+            if entry_minutes > current_minutes:
+                next_switch = day_start + timedelta(minutes=entry_minutes)
+                break
+
+    return next_switch
 
 
 def _calculate_temp_basal_insulin(
