@@ -501,8 +501,10 @@ def get_tdd_by_day(days: int = 7) -> dict:
             }
         }
 
-    # Group by day and sum insulin
+    # Separate boluses from temp basals; temp basals need special handling for overlaps
     by_day: dict[str, dict] = {}
+    temp_basals_by_day: dict[str, list] = {}
+
     for treatment in treatments:
         if "created_at" not in treatment:
             continue
@@ -518,8 +520,8 @@ def get_tdd_by_day(days: int = 7) -> dict:
                     "bolus_count": 0,
                     "basal_units": 0,
                     "temp_basal_count": 0,
-                    "treatments": []
                 }
+                temp_basals_by_day[day_key] = []
 
             # Count bolus insulin
             if treatment.get("insulin") and treatment.get("eventType") in [
@@ -528,23 +530,60 @@ def get_tdd_by_day(days: int = 7) -> dict:
                 by_day[day_key]["bolus_units"] += treatment["insulin"]
                 by_day[day_key]["bolus_count"] += 1
 
-            # Estimate basal from temp basals
+            # Collect temp basals for later processing (need to handle overlaps)
             if treatment.get("eventType") == "Temp Basal" and treatment.get("rate"):
-                # Basal is rate (units/hour) × duration (minutes) / 60
-                rate = treatment.get("rate", 0)
-                duration = treatment.get("duration", 0)
-                basal_units = (rate * duration) / 60 if rate and duration else 0
-                by_day[day_key]["basal_units"] += basal_units
+                temp_basals_by_day[day_key].append({
+                    "timestamp": ts,
+                    "rate": treatment.get("rate", 0),
+                    "duration": treatment.get("duration", 0),
+                })
                 by_day[day_key]["temp_basal_count"] += 1
-
-            by_day[day_key]["treatments"].append({
-                "type": treatment.get("eventType"),
-                "insulin": treatment.get("insulin"),
-                "time": ts.strftime("%H:%M"),
-            })
 
         except (ValueError, KeyError):
             pass
+
+    # Process temp basals per day: calculate actual delivery time accounting for overlaps
+    # When a new temp basal is issued, it overrides the previous one
+    for day_key, temp_basals in temp_basals_by_day.items():
+        if not temp_basals:
+            continue
+
+        # Sort by timestamp
+        temp_basals_sorted = sorted(temp_basals, key=lambda x: x["timestamp"])
+
+        # Calculate actual duration for each temp basal
+        day_start = datetime.fromisoformat(
+            f"{day_key}T00:00:00+00:00"
+        )
+        day_end = datetime.fromisoformat(
+            f"{day_key}T23:59:59.999999+00:00"
+        )
+
+        basal_units = 0
+        for i, tb in enumerate(temp_basals_sorted):
+            start_time = tb["timestamp"]
+            # The actual delivery time is either:
+            # 1. Until the next temp basal starts (overrides this one), OR
+            # 2. For the declared duration, whichever is shorter
+            if i + 1 < len(temp_basals_sorted):
+                next_start = temp_basals_sorted[i + 1]["timestamp"]
+            else:
+                next_start = day_end
+
+            # Actual runtime: gap to next command or declared duration, whichever is shorter
+            # This handles overlapping temp basals where the pump issues new commands
+            # every ~5 minutes but declares 30+ minute durations
+            gap_to_next_minutes = (next_start - start_time).total_seconds() / 60
+            actual_duration_minutes = min(
+                gap_to_next_minutes, tb["duration"]
+            )
+
+            # Only count if duration is positive and we're within the day
+            if actual_duration_minutes > 0 and start_time <= day_end:
+                actual_units = (tb["rate"] * actual_duration_minutes) / 60
+                basal_units += actual_units
+
+        by_day[day_key]["basal_units"] = basal_units
 
     # Compute daily TDD
     daily_tdd = []
