@@ -20,6 +20,7 @@ from src.nightscout_client import (
     get_device_status,
     get_aggregated_glucose_stats,
     get_tir_by_day,
+    get_tdd_by_day,
 )
 
 AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN")
@@ -508,6 +509,23 @@ def get_tir_summary(days: int = 7, low: int = 70, high: int = 180) -> dict:
         Each day includes: date, readings, average_glucose, tir_pct, min, max
     """
     return get_tir_by_day(days=days, low=low, high=high)
+
+
+@mcp.tool()
+def get_tdd_summary(days: int = 7) -> dict:
+    """Get Total Daily Dose (TDD) of insulin for the last N days.
+
+    Returns bolus + basal insulin per day. Perfect for asking
+    "what's my average TDD?" or "show me my daily insulin usage".
+
+    Args:
+        days: Number of days to analyze (default 7 = 1 week)
+
+    Returns:
+        dict with 'days' (array of daily TDD) and 'summary' (overall stats)
+        Each day includes: bolus_units, basal_units, tdd_units, bolus_count
+    """
+    return get_tdd_by_day(days=days)
 
 
 # =============================================================================

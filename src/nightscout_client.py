@@ -467,6 +467,127 @@ def get_aggregated_glucose_stats(date_from: str, date_to: str) -> dict:
     }
 
 
+def get_tdd_by_day(days: int = 7) -> dict:
+    """Get Total Daily Dose (TDD) of insulin for each day in the last N days.
+
+    Sums bolus insulin (meal/correction) and basal insulin (background rate).
+    Useful for tracking insulin usage patterns and adjusting doses.
+
+    Args:
+        days: Number of days to analyze (default 7)
+
+    Returns:
+        dict with 'days' list (each day's TDD breakdown) and 'summary' (overall stats)
+    """
+    now = datetime.now(timezone.utc)
+    date_from = (now - timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).isoformat()
+    date_to = now.replace(
+        hour=23, minute=59, second=59, microsecond=999999
+    ).isoformat()
+
+    # Fetch all treatments for the period
+    treatments = get_treatments_by_range(date_from, date_to, count=999999)
+
+    if not treatments:
+        return {
+            "period_days": days,
+            "days": [],
+            "summary": {
+                "total_bolus_units": 0,
+                "average_daily_bolus": 0,
+                "average_tdd": 0,
+            }
+        }
+
+    # Group by day and sum insulin
+    by_day: dict[str, dict] = {}
+    for treatment in treatments:
+        if "created_at" not in treatment:
+            continue
+        try:
+            ts = datetime.fromisoformat(
+                treatment["created_at"].replace("Z", "+00:00")
+            )
+            day_key = ts.strftime("%Y-%m-%d")
+
+            if day_key not in by_day:
+                by_day[day_key] = {
+                    "bolus_units": 0,
+                    "bolus_count": 0,
+                    "basal_units": 0,
+                    "temp_basal_count": 0,
+                    "treatments": []
+                }
+
+            # Count bolus insulin
+            if treatment.get("insulin") and treatment.get("eventType") in [
+                "Bolus", "Meal Bolus", "Correction Bolus", "Snack Bolus"
+            ]:
+                by_day[day_key]["bolus_units"] += treatment["insulin"]
+                by_day[day_key]["bolus_count"] += 1
+
+            # Estimate basal from temp basals
+            if treatment.get("eventType") == "Temp Basal" and treatment.get("rate"):
+                # Basal is rate (units/hour) × duration (minutes) / 60
+                rate = treatment.get("rate", 0)
+                duration = treatment.get("duration", 0)
+                basal_units = (rate * duration) / 60 if rate and duration else 0
+                by_day[day_key]["basal_units"] += basal_units
+                by_day[day_key]["temp_basal_count"] += 1
+
+            by_day[day_key]["treatments"].append({
+                "type": treatment.get("eventType"),
+                "insulin": treatment.get("insulin"),
+                "time": ts.strftime("%H:%M"),
+            })
+
+        except (ValueError, KeyError):
+            pass
+
+    # Compute daily TDD
+    daily_tdd = []
+    total_bolus = 0
+    total_basal = 0
+
+    for day_key in sorted(by_day.keys()):
+        day_data = by_day[day_key]
+        bolus = day_data["bolus_units"]
+        basal = day_data["basal_units"]
+        tdd = bolus + basal
+
+        total_bolus += bolus
+        total_basal += basal
+
+        daily_tdd.append({
+            "date": day_key,
+            "bolus_units": round(bolus, 1),
+            "bolus_count": day_data["bolus_count"],
+            "basal_units": round(basal, 1),
+            "temp_basal_count": day_data["temp_basal_count"],
+            "tdd_units": round(tdd, 1),
+        })
+
+    # Summary
+    num_days = len(daily_tdd) if daily_tdd else 1
+    avg_daily_bolus = total_bolus / num_days if num_days > 0 else 0
+    avg_tdd = (total_bolus + total_basal) / num_days if num_days > 0 else 0
+
+    return {
+        "period_days": days,
+        "days": daily_tdd,
+        "summary": {
+            "total_bolus_units": round(total_bolus, 1),
+            "total_basal_units": round(total_basal, 1),
+            "total_tdd_units": round(total_bolus + total_basal, 1),
+            "average_daily_bolus": round(avg_daily_bolus, 1),
+            "average_daily_basal": round(total_basal / num_days, 1) if num_days > 0 else 0,
+            "average_tdd": round(avg_tdd, 1),
+        }
+    }
+
+
 def get_tir_by_day(
     days: int = 7, low: int = 70, high: int = 180
 ) -> dict:
