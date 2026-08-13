@@ -6,9 +6,6 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    env_file: .env
     environment:
-      - NIGHTSCOUT_URL=${NIGHTSCOUT_URL}
-      - NIGHTSCOUT_API_SECRET=${NIGHTSCOUT_API_SECRET}
-      - NIGHTSCOUT_TOKEN=${NIGHTSCOUT_TOKEN}
-      - NIGHTSCOUT_TIMEOUT=${NIGHTSCOUT_TIMEOUT:-30}
-      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
+      - NIGHTSCOUT_TIMEOUT=30
